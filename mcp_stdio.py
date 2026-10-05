@@ -44,6 +44,9 @@ _ENV_HEADERS = {
     ),
     "x-gemini-key": lambda: os.environ.get("GEMINI_API_KEY"),
     "x-upload-post-key": lambda: os.environ.get("UPLOAD_POST_API_KEY"),
+    # The self-host server password (app.APITokenGate): the tools call back into
+    # /api in-process, through the same gate an HTTP client meets.
+    "x-openshorts-token": lambda: os.environ.get("OPENSHORTS_API_TOKEN") or None,
 }
 
 

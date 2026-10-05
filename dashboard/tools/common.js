@@ -6,8 +6,13 @@
  * biggest of them is the video converter, and that weight is mediabunny.
  */
 
+import { installServerAuth } from '../src/lib/serverAuth'
+
 // Same variable the app uses. Empty means same-origin (self-host behind one host).
 export const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
+
+// A self-host server password saved in the app reaches the tool endpoints too.
+installServerAuth()
 
 /* OpenPanel events. window.op is the queueing stub the page head defines; it
  * only ever flushes when the analytics init passed its host/placeholder guard,

@@ -31,6 +31,7 @@ from pydantic import BaseModel
 from s3_uploader import upload_job_artifacts, list_all_clips, upload_actor_to_s3, list_actor_gallery, upload_video_to_gallery, list_video_gallery
 import recut
 import layout_ranges
+import clip_store
 
 load_dotenv()
 
@@ -77,7 +78,7 @@ QUALITY_PROBE_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 # Stripe key, the JWT signing secret or the database password; one exploit
 # in that stack would otherwise hand over all of them.
 CHILD_ENV_DENYLIST = frozenset({
-    "DATABASE_URL", "POSTGRES_PASSWORD", "JWT_SECRET",
+    "DATABASE_URL", "NEON_DATABASE_URL", "OPENSHORTS_API_TOKEN", "POSTGRES_PASSWORD", "JWT_SECRET",
     "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET",
     "SMTP_USER", "SMTP_PASSWORD",
     "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
@@ -95,7 +96,10 @@ def child_env(base=None):
     secrets in CHILD_ENV_DENYLIST. Callers add GEMINI_API_KEY themselves."""
     env = dict(os.environ if base is None else base)
     for name in CHILD_ENV_DENYLIST:
-        env.pop(name, None)
+        # Blank, not removed: main.py and quality_probe.py call load_dotenv(),
+        # which refills a missing variable from the .env next to them (the
+        # self-host layout) but never overrides one that is set, even empty.
+        env[name] = ""
     return env
 
 
@@ -1651,6 +1655,8 @@ async def run_job_wrapper(job_id):
         # Autopilot bookkeeping + autopublish (before the generic clips-ready
         # email, which it replaces for its own jobs).
         await _autopilot_job_finished(job_id, job)
+        # Self-host clip store: rows first, so the webhook's receiver finds them.
+        await _save_clips_to_db(job_id)
         # Fire the caller's webhook (after archive, so durable links exist).
         await _notify_job_webhook(job_id)
         # Operational alerting for managed jobs (proxy out of credits / failures).
@@ -1754,6 +1760,27 @@ async def _archive_managed_job(job_id):
         await cloud.videos.archive_job(job['user_id'], job_id, clips, job['output_dir'])
     except Exception as e:
         print(f"⚠️  R2 archive error for {job_id}: {e}")
+
+
+async def _save_clips_to_db(job_id):
+    """Self-host clip store (clip_store.py, NEON_DATABASE_URL): one row per
+    rendered clip. Runs BEFORE the webhook so a caller notified of the job
+    finds its rows. The rows are built here on the loop, copying the clips;
+    only the database round trip goes to a thread."""
+    if not clip_store.enabled():
+        return
+    job = jobs.get(job_id) or {}
+    clips = (job.get('result') or {}).get('clips') or []
+    if job.get('status') != 'completed' or not clips:
+        return
+    rows = clip_store.build_rows(
+        job_id, clips, source_url=_job_source_url(job),
+        base_url=job.get('base_url') or os.environ.get("PUBLIC_API_URL", ""),
+        retention_seconds=JOB_RETENTION_SECONDS)
+    try:
+        await asyncio.wait_for(asyncio.to_thread(clip_store.write_rows, rows), timeout=60)
+    except Exception as e:
+        print(f"⚠️  Clip store error for {job_id}: {e!r}")
 
 
 def _archive_clip_edit_bg(job_id: str, clip_index: int, filename: str):
@@ -2201,6 +2228,91 @@ app.include_router(_mcp_server.router)
 import free_tools as _free_tools
 app.include_router(_free_tools.router)
 
+# Self-host server password. With OPENSHORTS_API_TOKEN set, every /api and /mcp
+# request must carry it, as X-OpenShorts-Token or "Authorization: Bearer <token>"
+# (what MCP clients send). Self-host has no accounts, so before this anyone who
+# found the public address could run jobs on the machine and spend its keys.
+# Left open: CORS preflights, /api/config (the dashboard reads it before it
+# knows the password) and GET /api/source/<job_id>, which a <video src> loads
+# without headers and whose job id is the capability, like /videos. An empty
+# variable keeps the default self-host behaviour: no password.
+API_TOKEN = os.environ.get("OPENSHORTS_API_TOKEN", "").strip()
+if API_TOKEN and BILLING_ENABLED:
+    # Cloud mode authenticates users itself; one shared password would lock
+    # every account out of the API.
+    print("⚠️  OPENSHORTS_API_TOKEN is ignored in cloud mode (BILLING_ENABLED).")
+    API_TOKEN = ""
+if API_TOKEN and (not API_TOKEN.isascii() or len(API_TOKEN) < 16):
+    # Headers travel as Latin-1, so a non-ASCII password can never be matched.
+    print("⚠️  OPENSHORTS_API_TOKEN should be at least 16 plain ASCII characters "
+          "(e.g. python -c \"import secrets; print(secrets.token_urlsafe(32))\").")
+_TOKEN_OPEN_PATHS = frozenset({"/api/config"})
+_TOKEN_OPEN_GET_PREFIXES = ("/api/source/",)
+# Interactive docs and the schema list every endpoint; with a password they go behind it too.
+_TOKEN_DOC_PATHS = ("/docs", "/redoc", "/openapi.json")
+# An agent uploading a file PUTs the bytes to the upload_url that create_upload
+# returned, with a bare `curl -T`. The upload id is the capability, as the job
+# id is for /videos; creating the slot (POST) and starting the job stay gated.
+_UPLOAD_SLOT = re.compile(r"/api/uploads/[^/]+")
+
+
+def _token_required(method, path):
+    if not API_TOKEN or method == "OPTIONS":
+        return False
+    if path.startswith(_TOKEN_DOC_PATHS):
+        return True
+    if not (path.startswith("/api/") or path == "/mcp" or path.startswith("/mcp/")):
+        return False
+    if path in _TOKEN_OPEN_PATHS:
+        return False
+    if method in ("PUT", "DELETE") and _UPLOAD_SLOT.fullmatch(path):
+        return False
+    return not (method in ("GET", "HEAD") and path.startswith(_TOKEN_OPEN_GET_PREFIXES))
+
+
+def _route_path(scope):
+    """The path routing sees: uvicorn prefixes root_path (--root-path behind a
+    proxy) and Starlette strips it before matching, so the gate must too, or
+    every route would sit outside the /api prefix it checks."""
+    path, root = scope["path"], scope.get("root_path", "")
+    if root and path.startswith(root):
+        path = path[len(root):] or "/"
+    return path
+
+
+def _supplied_token(headers):
+    token = headers.get("x-openshorts-token", "")
+    if not token:
+        auth = headers.get("authorization", "")
+        if auth[:7].lower() == "bearer ":
+            token = auth[7:].strip()
+    return token
+
+
+class APITokenGate:
+    """Pure ASGI rather than BaseHTTPMiddleware, so /videos range downloads
+    stream through untouched. Added before CORS, which makes CORS the outer
+    layer: the 401 still carries the CORS headers the browser needs to read it."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and _token_required(scope["method"], _route_path(scope)):
+            headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                       for k, v in scope["headers"]}
+            if not hmac.compare_digest(_supplied_token(headers).encode(), API_TOKEN.encode()):
+                response = JSONResponse(
+                    {"detail": "This server needs its password. "
+                               "Add it in the dashboard under Settings → Server password."},
+                    status_code=401, headers={"X-OpenShorts-Auth": "required"})
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(APITokenGate)
+
 # Enable CORS for frontend. Cloud mode locks this down to the configured origins;
 # self-host keeps the permissive wildcard it has always used.
 app.add_middleware(
@@ -2211,8 +2323,9 @@ app.add_middleware(
     allow_headers=["*"],
     # Without this the browser hides them from fetch(), so the clip download had
     # no total to measure against and could not show progress. Safelisted or not,
-    # they only become readable to JS once they are named here.
-    expose_headers=["Content-Length", "Content-Range", "Accept-Ranges"],
+    # they only become readable to JS once they are named here. X-OpenShorts-Auth
+    # tells the dashboard a 401 came from the server password.
+    expose_headers=["Content-Length", "Content-Range", "Accept-Ranges", "X-OpenShorts-Auth"],
 )
 
 # Mount static files for serving videos. A miss under /videos/<job_id>/ first
@@ -2534,8 +2647,19 @@ async def get_config():
         "jobRetentionSeconds": JOB_RETENTION_SECONDS,
         # Self-host only: tells the dashboard the Gemini key is optional
         # because the moment picker runs on an OpenAI-compatible server.
-        "localLlm": None if BILLING_ENABLED else llm_backend.describe(),
+        "localLlm": None if BILLING_ENABLED else _public_llm_description(),
+        # Self-host only: the API needs OPENSHORTS_API_TOKEN (see APITokenGate).
+        "serverPassword": bool(API_TOKEN),
     }
+
+
+def _public_llm_description():
+    """/api/config answers without the server password, so it must not hand
+    out the address of the private LLM server behind it."""
+    llm = llm_backend.describe()
+    if llm and API_TOKEN:
+        llm = {k: v for k, v in llm.items() if k != "baseUrl"}
+    return llm
 
 async def _probe_youtube_quality(url: str) -> dict:
     """Run quality_probe.py in a worker thread; {} on any failure (fail-open)."""
@@ -2969,6 +3093,10 @@ async def process_endpoint(
         if auto_hook_style in HOOK_STYLES:
             env["AUTO_HOOK_STYLE"] = auto_hook_style
         print(f"[auto-hook] job={job_id} style={env.get('AUTO_HOOK_STYLE', 'classic')}")
+    elif auto_hook is not None and str(auto_hook).lower() in ("0", "false", "no"):
+        # An explicit no beats a deployment default of AUTO_HOOK=1. Set to "0"
+        # rather than removed: main.py's load_dotenv() refills a removed one.
+        env["AUTO_HOOK"] = "0"
 
     # Manual generation controls (discussion #65): optional clip-count target
     # and duration band, forwarded to the selection prompts via the same env

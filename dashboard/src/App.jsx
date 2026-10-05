@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Upload, Sparkles, Youtube, Instagram, Share2, ChevronDown, Check, Activity, LayoutDashboard, Settings, Plus, History, X, Terminal, Shield, LayoutGrid, Image, Globe, RotateCcw, Calendar, AlertTriangle, KeyRound, Bot, Users, Smartphone, ExternalLink, Copy, CheckCircle2, Mail, Loader2, Download, Menu, Lock, Rocket } from 'lucide-react';
 import KeyInput from './components/KeyInput';
+import ServerPasswordInput from './components/ServerPasswordInput';
+import { SERVER_PASSWORD_REQUIRED, getServerToken } from './lib/serverAuth';
 import MediaInput from './components/MediaInput';
 import McpConnectCard from './components/McpConnectCard';
 import ResultCard from './components/ResultCard';
@@ -267,7 +269,17 @@ const pollJob = async (jobId) => {
 
 function App() {
   // Cloud auth/billing session (inert when billing is disabled).
-  const { billingEnabled, isManaged, isSignedIn, me, plan, refreshMe, jobRetentionSeconds, localLlm } = useAuth();
+  const { billingEnabled, isManaged, isSignedIn, me, plan, refreshMe, jobRetentionSeconds, localLlm, serverPassword } = useAuth();
+  // Self-host server password: the server asks for one (config) and none is
+  // stored, or a request was just refused for lacking it.
+  const [serverPasswordRefused, setServerPasswordRefused] = useState(false);
+  const [hasServerToken, setHasServerToken] = useState(() => !!getServerToken());
+  useEffect(() => {
+    const onRefused = () => setServerPasswordRefused(true);
+    window.addEventListener(SERVER_PASSWORD_REQUIRED, onRefused);
+    return () => window.removeEventListener(SERVER_PASSWORD_REQUIRED, onRefused);
+  }, []);
+  const serverPasswordMissing = serverPasswordRefused || (serverPassword && !hasServerToken);
   const [showLogin, setShowLogin] = useState(false);
   const [showTopUp, setShowTopUp] = useState(false);
   const [showPlanChoice, setShowPlanChoice] = useState(false);
@@ -1428,6 +1440,18 @@ function App() {
             )}
             {billingEnabled && isSignedIn && <ProfileMenu />}
 
+            {!billingEnabled && serverPasswordMissing && (
+              <button
+                onClick={() => goToTab('settings')}
+                className="badge-warn hover:brightness-125 transition-all inline-flex"
+                title="This OpenShorts server needs its password"
+              >
+                <Lock size={12} />
+                <span className="hidden md:inline">Server password needed</span>
+                <span className="md:hidden">password</span>
+              </button>
+            )}
+
             {/* Hidden below sm: the standing banner underneath already says the
                 same thing, and two warnings in a 360px header is just noise. */}
             {keysMissing && (
@@ -1516,7 +1540,14 @@ function App() {
               </div>
               {/* Self-hosted installs have no account page, so the agent
                   how-to lives here; cloud users get it (with OAuth) in Account. */}
-              {!billingEnabled && <div className="mb-6"><McpConnectCard cloud={false} /></div>}
+              {!billingEnabled && (serverPassword || serverPasswordRefused || hasServerToken) && (
+                <ServerPasswordInput onSaved={() => { setHasServerToken(true); setServerPasswordRefused(false); }} />
+              )}
+              {!billingEnabled && (
+                <div className="mb-6">
+                  <McpConnectCard cloud={false} serverPassword={serverPassword || serverPasswordRefused || hasServerToken} />
+                </div>
+              )}
               {isManaged ? (
                 <div className="card p-6 mb-2">
                   <div className="flex items-center justify-between mb-3">

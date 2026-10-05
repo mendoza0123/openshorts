@@ -20,6 +20,8 @@ boto3==1.43.4
 fastapi==0.136.1
 uvicorn==0.46.0
 python-multipart==0.0.27
+# Self-host clip store (clip_store.py); only used when NEON_DATABASE_URL is set
+psycopg[binary]==3.3.6
 httpx==0.28.1
 Pillow==12.2.0
 beautifulsoup4==4.14.3

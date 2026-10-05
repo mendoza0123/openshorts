@@ -494,6 +494,44 @@ portrait clip cannot reproduce the shrink either.
   can carry durable download links; survives redeploys via the resume manifest.
   `PUBLIC_API_URL` env sets the absolute-URL base when behind a proxy.
 
+### Self-host server password (`app.APITokenGate`)
+
+Self-host has no accounts, so once the API is reachable from the internet
+(Tailscale Funnel, a tunnel) anyone could run jobs on the machine and spend its
+keys. With `OPENSHORTS_API_TOKEN` set, a pure-ASGI gate (added before CORS, so
+the 401 still carries CORS headers and `X-OpenShorts-Auth: required`) refuses
+every `/api/*` and `/mcp` request, plus `/docs`, `/redoc` and `/openapi.json`,
+that lacks `X-OpenShorts-Token: <token>` or `Authorization: Bearer <token>`.
+Open on purpose: OPTIONS, `/api/config` (the dashboard reads `serverPassword`
+from it before it has the password), GET/HEAD `/api/source/<job_id>` (a `<video
+src>` cannot send headers; the job id is the capability, as for `/videos`), and
+PUT/DELETE `/api/uploads/<id>` (agents PUT the bytes with a bare `curl -T`; the
+POST that mints the id stays gated). The gate matches the routing path, with
+`root_path` stripped. Ignored in cloud mode. The dashboard wraps `window.fetch`
+(`lib/serverAuth.js`) to add the header to requests for the API origin only;
+the free tool pages install the same wrapper. `mcp_server` forwards the header
+into its in-process calls and `mcp_stdio` reads it from the env.
+`CHILD_ENV_DENYLIST` names are now **blanked**, not removed, in `child_env()`:
+`load_dotenv()` in `main.py` refilled a removed name from the self-host `.env`.
+
+### Self-host clip store (`clip_store.py`)
+
+With `NEON_DATABASE_URL` set (any Postgres; a Neon pooled URL works), every
+completed job writes one row per rendered clip to a `clips` table, created on
+first use. `app._save_clips_to_db` runs in `run_job_wrapper`'s finally block
+**before** `_notify_job_webhook`, so an automation woken by the webhook finds
+the rows. The rows are built on the loop (`build_rows`, pure) and only the
+database round trip goes to a thread; any failure logs one line and the job
+stays completed. Rows hold metadata and `file_name`, not the video: a consumer
+downloads `/videos/<job_id>/<file_name>` before `file_expires_at`
+(`JOB_RETENTION_SECONDS`). Prefer `file_name` over `clip_index`, which can shift
+when a restart rebuilds a job with a failed clip. A re-save upserts on
+`(job_id, clip_index)` and never touches the publishing columns (`post_status`,
+`scheduled_for`, `upload_post_id`, `youtube_url`, `posted_at`, `post_error`),
+which belong to the workflow that posts the clip. `tests/conftest.py` blanks the
+variable so the suite never writes to a developer's real database. Edits made
+later in the dashboard (recut, subtitles) do not update the row yet.
+
 ### Autopilot (`cloud/autopilot.py`, dashboard tab "Autopilot")
 
 Cloud-only retention feature: every new video on the user's connected YouTube

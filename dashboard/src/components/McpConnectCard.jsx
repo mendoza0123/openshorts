@@ -5,8 +5,8 @@ import { getApiUrl } from '../config';
 // "Connect an agent": the one place that tells a person how to drive
 // OpenShorts from Claude, ChatGPT, Cursor or n8n. Cloud accounts connect by
 // URL (claude.ai and ChatGPT run the OAuth flow themselves; CLI clients take
-// an API key); a self-hosted install has no auth, so every snippet is the
-// local URL and nothing else.
+// an API key); a self-hosted install has no auth unless its server password
+// (OPENSHORTS_API_TOKEN) is set, which every snippet then sends as a Bearer.
 
 const CLOUD_MCP_URL = 'https://mcp.openshorts.app/mcp';
 
@@ -20,8 +20,8 @@ function localMcpUrl() {
   try { return `${window.location.protocol}//${window.location.hostname}:8000/mcp`; } catch { return 'http://localhost:8000/mcp'; }
 }
 
-function buildClients({ cloud, url }) {
-  const key = cloud ? 'osk_YOUR_KEY' : null;
+function buildClients({ cloud, url, serverPassword }) {
+  const key = cloud ? 'osk_YOUR_KEY' : (serverPassword ? 'YOUR_SERVER_PASSWORD' : null);
   const header = key ? ` \\\n  --header "Authorization: Bearer ${key}"` : '';
   const desktopArgs = key
     ? `["-y", "mcp-remote", "${url}", "--header", "Authorization: Bearer ${key}"]`
@@ -49,7 +49,11 @@ function buildClients({ cloud, url }) {
     {
       id: 'claude-code', label: 'Claude Code', kind: 'code', lang: 'bash',
       snippet: `claude mcp add --transport http openshorts ${url}${header}`,
-      note: cloud ? 'Create a key below and paste it in place of osk_YOUR_KEY.' : 'No key needed on a self-hosted install.',
+      note: cloud
+        ? 'Create a key below and paste it in place of osk_YOUR_KEY.'
+        : serverPassword
+          ? 'Replace YOUR_SERVER_PASSWORD with OPENSHORTS_API_TOKEN from the server\'s .env.'
+          : 'No key needed on a self-hosted install.',
     },
     {
       id: 'claude-desktop', label: 'Claude Desktop', kind: 'code', lang: 'json',
@@ -66,7 +70,11 @@ function buildClients({ cloud, url }) {
       steps: [
         'Add an "MCP Client Tool" node to your AI Agent.',
         `Endpoint: ${url}  ·  Transport: HTTP Streamable.`,
-        cloud ? 'Authentication: Bearer, with a key from below.' : 'Authentication: none.',
+        cloud
+          ? 'Authentication: Bearer, with a key from below.'
+          : serverPassword
+            ? 'Authentication: Bearer, with the server password (OPENSHORTS_API_TOKEN).'
+            : 'Authentication: none.',
       ],
       snippet: url,
     },
@@ -78,9 +86,9 @@ function buildClients({ cloud, url }) {
   ].filter(Boolean);
 }
 
-export default function McpConnectCard({ cloud = true, compact = false }) {
+export default function McpConnectCard({ cloud = true, compact = false, serverPassword = false }) {
   const url = cloud ? CLOUD_MCP_URL : localMcpUrl();
-  const clients = buildClients({ cloud, url });
+  const clients = buildClients({ cloud, url, serverPassword });
   const [active, setActive] = useState(clients[0].id);
   const [copied, setCopied] = useState(false);
   const current = clients.find((c) => c.id === active) || clients[0];
@@ -102,7 +110,9 @@ export default function McpConnectCard({ cloud = true, compact = false }) {
         8 tools (process a video or upload one, check a job, list clips, add subtitles, recut, publish, quota).
         {cloud
           ? ' claude.ai and ChatGPT connect with one URL and a sign-in; CLI clients use an API key.'
-          : ' This install runs without accounts, so no key is needed.'}
+          : serverPassword
+            ? ' This install is protected by its server password: every client sends it as a Bearer token.'
+            : ' This install runs without accounts, so no key is needed.'}
       </p>
 
       <div className="flex flex-wrap gap-1.5 mb-4" role="tablist" aria-label="client">

@@ -9,6 +9,7 @@ import AccountPage from './components/AccountPage'
 import LoginModal from './components/LoginModal'
 import { applyConsent } from './lib/consent'
 import CookieBanner from './components/CookieBanner'
+import { installServerAuth } from './lib/serverAuth'
 
 const App = lazy(() => import('./App.jsx'))
 const Legal = lazy(() => import('./Legal.jsx'))
@@ -110,6 +111,9 @@ function Root() {
   if (view === 'app') return <App />;
   return <Landing onLaunchApp={handleLaunchApp} />;
 }
+
+// Before anything fetches: a self-host server password rides on every API call.
+installServerAuth();
 
 // Before React mounts: AuthContext rewrites the URL on auth redirects, which
 // would destroy the referrer and any UTM params we still need to read.

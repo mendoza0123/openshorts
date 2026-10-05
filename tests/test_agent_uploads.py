@@ -168,4 +168,5 @@ def test_auto_hook_false_opts_out(dirs, monkeypatch):
     async def fake_put(item): pass
     monkeypatch.setattr(app_module.job_queue, "put", fake_put)
     payload = _tool_payload(_mcp("process_video", {"upload_id": slot["upload_id"], "confirm_rights": True, "auto_hook": False}))
-    assert "AUTO_HOOK" not in app_module.jobs[payload["job_id"]]["env"]
+    # Off explicitly ("0"), so a deployment default of AUTO_HOOK=1 cannot win.
+    assert app_module.jobs[payload["job_id"]]["env"].get("AUTO_HOOK") != "1"

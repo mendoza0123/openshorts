@@ -50,7 +50,8 @@ INSTRUCTIONS = (
 
 # Headers an MCP caller may use to authenticate / bring their own keys; they are
 # forwarded verbatim to the internal endpoints so every existing auth path works.
-_FORWARD_HEADERS = ("authorization", "x-api-key", "x-gemini-key", "x-upload-post-key")
+_FORWARD_HEADERS = ("authorization", "x-api-key", "x-gemini-key", "x-upload-post-key",
+                    "x-openshorts-token")
 
 _LOG_TAIL = 10  # status logs are for humans; agents only need the tail
 

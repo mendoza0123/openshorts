@@ -173,7 +173,7 @@ def test_resumed_job_keeps_its_safety_cap(dirs, monkeypatch):
 # Subprocess environment
 # --------------------------------------------------------------------------- #
 def test_child_env_drops_server_secrets(monkeypatch):
-    for name in ("STRIPE_SECRET_KEY", "JWT_SECRET", "DATABASE_URL", "SMTP_PASSWORD",
+    for name in ("STRIPE_SECRET_KEY", "JWT_SECRET", "DATABASE_URL", "NEON_DATABASE_URL", "SMTP_PASSWORD",
                  "TELEGRAM_BOT_TOKEN", "AGENTLEDGER_API_KEY", "R2_SECRET_ACCESS_KEY",
                  "MANAGED_UPLOAD_POST_API_KEY", "GOOGLE_CLIENT_SECRET"):
         monkeypatch.setenv(name, "secret")
@@ -182,7 +182,8 @@ def test_child_env_drops_server_secrets(monkeypatch):
         monkeypatch.setenv(name, "keep")
     env = app_module.child_env()
     for name in app_module.CHILD_ENV_DENYLIST:
-        assert name not in env
+        # Present but empty: load_dotenv() in the child would refill a missing one.
+        assert env.get(name) == ""
     for name in ("YOUTUBE_COOKIES", "PROXY_URL", "STATIC_PROXY_URLS", "GEMINI_API_KEY",
                  "BGUTIL_SCRIPT_PATH", "FFMPEG_ENCODER", "WHISPER_MODEL"):
         assert env[name] == "keep"
@@ -220,7 +221,7 @@ def test_job_env_has_no_server_secrets(dirs, calls, monkeypatch):
     monkeypatch.setenv("JWT_SECRET", "jwt")
     resp = _post_process({"url": "https://www.youtube.com/watch?v=ok", "acknowledged": True})
     env = app_module.jobs[resp.json()["job_id"]]["env"]
-    assert "STRIPE_SECRET_KEY" not in env and "JWT_SECRET" not in env
+    assert not env.get("STRIPE_SECRET_KEY") and not env.get("JWT_SECRET")
     assert env["GEMINI_API_KEY"] == "test-key"
 
 
