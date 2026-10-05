@@ -6,10 +6,15 @@ torchvision==0.26.0
 tqdm==4.67.3
 yt-dlp
 faster-whisper==1.2.1
+# faster-whisper 1.2.1 calls av.open(metadata_errors=...), which PyAV 19 removed
+av>=11,<19
 py3langid==0.3.0
 google-genai==1.75.0
 python-dotenv==1.2.2
-mediapipe==0.10.14
+# 0.10.14 has no wheels past Python 3.12; the newer releases dropped mp.solutions
+# (face_detect_compat.py covers both) and need libgles2 on the host.
+mediapipe==0.10.14; python_version < "3.13"
+mediapipe>=0.10.30; python_version >= "3.13"
 boto3==1.43.4
 
 fastapi==0.136.1
