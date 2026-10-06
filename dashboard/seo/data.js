@@ -11,13 +11,18 @@
  *      misquoted fact about this product.
  */
 
+// www is what the apex already redirects to, so it is the canonical host. A
+// self-hosted deploy sets SITE_URL at build time (e.g. its Vercel address) so
+// the generated pages' buttons, canonicals and sitemap point at itself instead
+// of sending its visitors to openshorts.app.
+const SITE_URL = (process.env.SITE_URL || 'https://www.openshorts.app').replace(/\/+$/, '')
+
 export const SITE = {
-  // www is what the apex already redirects to, so it is the canonical host.
-  url: 'https://www.openshorts.app',
+  url: SITE_URL,
   name: 'OpenShorts',
   repo: 'https://github.com/mutonby/openshorts',
-  logo: 'https://www.openshorts.app/logo-openshorts.png',
-  ogImage: 'https://www.openshorts.app/og-image.png',
+  logo: `${SITE_URL}/logo-openshorts.png`,
+  ogImage: `${SITE_URL}/og-image.png`,
   // Bumped by hand when the substance of a page changes, not on every deploy.
   updated: '2026-08-04',
   published: '2024-06-01',

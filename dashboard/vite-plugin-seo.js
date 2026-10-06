@@ -133,10 +133,15 @@ export default function seoPlugin() {
             'the crawler-visible homepage content was not injected.'
         )
       }
-      return html.replace(
+      const page = html.replace(
         '<div id="root"></div>',
         `<div id="root">${LANDING_FALLBACK}</div>`
       )
+      // A deploy with its own SITE_URL must not declare openshorts.app as its
+      // canonical home (index.html hard-codes it in canonical, og and JSON-LD).
+      return SITE.url === 'https://www.openshorts.app'
+        ? page
+        : page.replaceAll('https://www.openshorts.app', SITE.url)
     },
 
     generateBundle(_options, bundle) {
